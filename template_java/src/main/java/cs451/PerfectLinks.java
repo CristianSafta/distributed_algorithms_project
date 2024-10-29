@@ -19,7 +19,18 @@ public class PerfectLinks {
         this.processId = processId;
         this.port = port;
         this.hosts = hosts;
-        this.socket = new DatagramSocket(port);
+        //this.socket = new DatagramSocket(port);
+        // Create a DatagramSocket with the SO_REUSEADDR option
+        DatagramSocket newSocket = new DatagramSocket(null); // Creates an unbound DatagramSocket
+
+        // Allow the socket to reuse the address
+        newSocket.setReuseAddress(true);
+
+        // Bind the socket to the port
+        newSocket.bind(new InetSocketAddress(port));
+        this.socket = newSocket;
+
+
     }
 
     // Start the receiver thread
@@ -117,7 +128,9 @@ public class PerfectLinks {
         // For now, we'll just print it
         String logEntry = "d " + message.getSenderId() + " " + message.getSeqNum();
         Main.logEvent(logEntry);
-        System.out.println("Delivered message from Process " + message.getSenderId() + ": SeqNum " + message.getSeqNum());
+        if((message.getSeqNum() % 1000) == 0){
+            System.out.println("Delivered message from Process " + message.getSenderId() + ": SeqNum " + message.getSeqNum());
+        }
     }
 
     // Close resources
