@@ -146,7 +146,7 @@ public class Main {
             // Sender process
             for (int seqNum = 1; seqNum <= m; seqNum++) {
                 String payload = ""; // Empty payload as per project
-                Message message = new Message(processId, seqNum, payload.getBytes());
+                Message message = new Message(processId,receiverId, seqNum, payload.getBytes());
                 perfectLinks.send(receiverId, message);
 
                 // Log the sending event

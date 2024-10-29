@@ -13,7 +13,8 @@ public class PerfectLinks {
     private final Set<String> deliveredMessages = Collections.synchronizedSet(new HashSet<>());
     private final Set<String> ackedMessages = Collections.synchronizedSet(new HashSet<>());
     private final Map<String, Message> pendingMessages = new ConcurrentHashMap<>();
-    private final ExecutorService executorService = Executors.newFixedThreadPool(8); // Adjust as needed
+    // Replace the ExecutorService with a ScheduledExecutorService
+    private final ScheduledExecutorService retransmissionScheduler = Executors.newScheduledThreadPool(8);
 
     public PerfectLinks(int processId, int port, Map<Integer, Host> hosts) throws SocketException {
         this.processId = processId;
@@ -29,8 +30,21 @@ public class PerfectLinks {
         // Bind the socket to the port
         newSocket.bind(new InetSocketAddress(port));
         this.socket = newSocket;
+        // Schedule the retransmission task
+        retransmissionScheduler.scheduleAtFixedRate(this::retransmitPendingMessages, 0, 100, TimeUnit.MILLISECONDS);
 
 
+    }
+
+    private void retransmitPendingMessages() {
+        for (Message message : pendingMessages.values()) {
+            try {
+                Host destinationHost = hosts.get(message.getDestinationId());
+                sendMessage(destinationHost, message);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     // Start the receiver thread
@@ -46,22 +60,8 @@ public class PerfectLinks {
 
     // Send a message to a specific host
     public void send(int destinationId, Message message) {
-        Host destinationHost = hosts.get(destinationId);
         String messageId = message.getSenderId() + "-" + message.getSeqNum();
-
         pendingMessages.put(messageId, message);
-
-        // Start retransmission task
-        executorService.submit(() -> {
-            try {
-                while (!ackedMessages.contains(messageId)) {
-                    sendMessage(destinationHost, message);
-                    Thread.sleep(100); // Retransmit every 100ms
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        });
     }
 
     // Send the actual UDP message
@@ -136,6 +136,5 @@ public class PerfectLinks {
     // Close resources
     public void close() {
         socket.close();
-        executorService.shutdown();
     }
 }
