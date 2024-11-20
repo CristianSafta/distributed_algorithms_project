@@ -145,7 +145,7 @@ public class Main {
         if (processId != receiverId) {
             // Sender process
             for (int seqNum = 1; seqNum <= m; seqNum++) {
-                String payload = ""; // Empty payload as per project
+                String payload = String.valueOf(seqNum);
                 Message message = new Message(processId,receiverId, seqNum, payload.getBytes());
                 perfectLinks.send(receiverId, message);
 
