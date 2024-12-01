@@ -13,33 +13,55 @@ public class PerfectLinks {
     private final Set<String> deliveredMessages = Collections.synchronizedSet(new HashSet<>());
     private final Set<String> ackedMessages = Collections.synchronizedSet(new HashSet<>());
     private final Map<String, Message> pendingMessages = new ConcurrentHashMap<>();
-    // Replace the ExecutorService with a ScheduledExecutorService
     private final ScheduledExecutorService retransmissionScheduler = Executors.newScheduledThreadPool(8);
+    private MessageHandler messageHandler;
 
     public PerfectLinks(int processId, int port, Map<Integer, Host> hosts) throws SocketException {
         this.processId = processId;
         this.port = port;
         this.hosts = hosts;
-        //this.socket = new DatagramSocket(port);
-        // Create a DatagramSocket with the SO_REUSEADDR option
-        DatagramSocket newSocket = new DatagramSocket(null); // Creates an unbound DatagramSocket
 
-        // Allow the socket to reuse the address
+        DatagramSocket newSocket = new DatagramSocket(null);
         newSocket.setReuseAddress(true);
-
-        // Bind the socket to the port
         newSocket.bind(new InetSocketAddress(port));
         this.socket = newSocket;
-        // Schedule the retransmission task
+
+        // Start retransmission
         retransmissionScheduler.scheduleAtFixedRate(this::retransmitPendingMessages, 0, 100, TimeUnit.MILLISECONDS);
+    }
 
+    public interface MessageHandler {
+        void onMessageReceived(Message message);
+    }
 
+    public void setMessageHandler(MessageHandler handler) {
+        this.messageHandler = handler;
+    }
+
+    public void send(int destinationId, Message message) {
+        String messageId = message.getSenderId() + "-" + message.getSeqNum() + "-" + destinationId;
+        pendingMessages.put(messageId, message);
+
+        // Send the message immediately
+        try {
+            Host destinationHost = hosts.get(destinationId);
+            sendMessage(destinationHost, message);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private void retransmitPendingMessages() {
-        for (Message message : pendingMessages.values()) {
+        for (Map.Entry<String, Message> entry : pendingMessages.entrySet()) {
+            String key = entry.getKey();
+            Message message = entry.getValue();
+
+            // Extract destinationId from the key
+            String[] parts = key.split("-");
+            int destinationId = Integer.parseInt(parts[2]); // Key format: senderId-seqNum-destinationId
+
             try {
-                Host destinationHost = hosts.get(message.getDestinationId());
+                Host destinationHost = hosts.get(destinationId);
                 sendMessage(destinationHost, message);
             } catch (Exception e) {
                 e.printStackTrace();
@@ -47,24 +69,6 @@ public class PerfectLinks {
         }
     }
 
-    // Start the receiver thread
-    public void startReceiver() {
-        new Thread(() -> {
-            try {
-                receive();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
-    }
-
-    // Send a message to a specific host
-    public void send(int destinationId, Message message) {
-        String messageId = message.getSenderId() + "-" + message.getSeqNum();
-        pendingMessages.put(messageId, message);
-    }
-
-    // Send the actual UDP message
     private void sendMessage(Host host, Message message) throws IOException {
         InetAddress address = InetAddress.getByName(host.getIp());
         int destPort = host.getPort();
@@ -78,9 +82,18 @@ public class PerfectLinks {
         socket.send(packet);
     }
 
-    // Receive messages and ACKs
+    public void startReceiver() {
+        new Thread(() -> {
+            try {
+                receive();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+
     private void receive() throws IOException, ClassNotFoundException {
-        byte[] buffer = new byte[1024];
+        byte[] buffer = new byte[2048]; // Adjust buffer size if necessary
 
         while (true) {
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
@@ -100,19 +113,21 @@ public class PerfectLinks {
                 // Deliver the message if not already delivered
                 if (!deliveredMessages.contains(messageId)) {
                     deliveredMessages.add(messageId);
-                    // Handle delivery (e.g., log it)
-                    deliver(message);
+                    if (messageHandler != null) {
+                        messageHandler.onMessageReceived(message);
+                    }
                 }
             } else if (receivedObject instanceof Ack) {
                 Ack ack = (Ack) receivedObject;
-                ackedMessages.add(ack.getMessageId());
+                String ackMessageId = ack.getMessageId() + "-" + ack.getAckSenderId();
+                ackedMessages.add(ackMessageId);
+                pendingMessages.remove(ackMessageId);
             }
         }
     }
 
-    // Send ACK
     private void sendAck(InetAddress address, int port, String messageId) throws IOException {
-        Ack ack = new Ack(messageId);
+        Ack ack = new Ack(messageId, processId);
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         ObjectOutputStream outStream = new ObjectOutputStream(byteStream);
         outStream.writeObject(ack);
@@ -122,19 +137,8 @@ public class PerfectLinks {
         socket.send(packet);
     }
 
-    // Deliver the message (to be implemented)
-    private void deliver(Message message) {
-        // Implement delivery logic, e.g., add to a queue or process immediately
-        // For now, we'll just print it
-        String logEntry = "d " + message.getSenderId() + " " + message.getSeqNum();
-        Main.logEvent(logEntry);
-        if((message.getSeqNum() % 1000) == 0){
-            System.out.println("Delivered message from Process " + message.getSenderId() + ": SeqNum " + message.getSeqNum());
-        }
-    }
-
-    // Close resources
     public void close() {
         socket.close();
+        retransmissionScheduler.shutdown();
     }
 }

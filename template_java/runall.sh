@@ -1,12 +1,15 @@
 #!/bin/bash
 
 # Define the number of processes to spawn
-NUM_PROCESSES=3
+NUM_PROCESSES=3  # Adjust this if you have more processes
 
 # Define paths to configuration files and logs
 HOSTS_FILE="../example/hosts"
-CONFIG_FILE="../example/configs/perfect-links.config"
+CONFIG_FILE="../example/configs/fifo-broadcast.config"  # Updated for FIFO Broadcast
 LOGS_DIR="../example/output"
+
+# Create the logs directory if it doesn't exist
+mkdir -p "$LOGS_DIR"
 
 # Array to store the process IDs of each launched process
 PIDS=()
@@ -15,7 +18,7 @@ PIDS=()
 cleanup() {
     echo "Stopping all processes..."
     for pid in "${PIDS[@]}"; do
-        kill -SIGINT "$pid"  # Send SIGINT instead of SIGTERM
+        kill -SIGTERM "$pid"  # Send SIGTERM to allow graceful shutdown
     done
     wait  # Wait for all processes to exit
     echo "All processes stopped."

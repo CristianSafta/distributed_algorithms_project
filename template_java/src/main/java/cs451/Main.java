@@ -1,7 +1,6 @@
 package cs451;
 
 import java.io.*;
-import java.net.Socket;
 import java.net.SocketException;
 import java.util.HashMap;
 import java.util.List;
@@ -10,7 +9,6 @@ import java.util.Map;
 public class Main {
 
     private static int m; // Number of messages to send
-    private static int receiverId; // Receiver process ID
     private static BufferedWriter logWriter;
 
     private static void readConfig(String configPath) throws IOException {
@@ -18,9 +16,9 @@ public class Main {
         String line = reader.readLine();
         String[] tokens = line.trim().split(" ");
         m = Integer.parseInt(tokens[0]);
-        receiverId = Integer.parseInt(tokens[1]);
         reader.close();
     }
+
     private static void initLog(String outputPath) {
         try {
             logWriter = new BufferedWriter(new FileWriter(outputPath));
@@ -49,22 +47,13 @@ public class Main {
         }
     }
 
-
     private static void handleSignal() {
-        //immediately stop network packet processing
-        System.out.println("Immediately stopping network packet processing.");
-
-        //write/flush output file if necessary
-        System.out.println("Writing output.");
+        // Handle termination signals if necessary
+        System.out.println("Signal received. Shutting down.");
     }
 
     private static void initSignalHandlers() {
-        Runtime.getRuntime().addShutdownHook(new Thread() {
-            @Override
-            public void run() {
-                handleSignal();
-            }
-        });
+        Runtime.getRuntime().addShutdownHook(new Thread(Main::handleSignal));
     }
 
     public static void main(String[] args) throws InterruptedException {
@@ -73,31 +62,6 @@ public class Main {
 
         initSignalHandlers();
 
-        // example
-        long pid = ProcessHandle.current().pid();
-        System.out.println("My PID: " + pid + "\n");
-        System.out.println("From a new terminal type `kill -SIGINT " + pid + "` or `kill -SIGTERM " + pid + "` to stop processing packets\n");
-
-        System.out.println("My ID: " + parser.myId() + "\n");
-        System.out.println("List of resolved hosts is:");
-        System.out.println("==========================");
-        for (Host host: parser.hosts()) {
-            System.out.println(host.getId());
-            System.out.println("Human-readable IP: " + host.getIp());
-            System.out.println("Human-readable Port: " + host.getPort());
-            System.out.println();
-        }
-        System.out.println();
-
-        System.out.println("Path to output:");
-        System.out.println("===============");
-        System.out.println(parser.output() + "\n");
-
-        System.out.println("Path to config:");
-        System.out.println("===============");
-        System.out.println(parser.config() + "\n");
-
-        System.out.println("Doing some initialization\n");
         initLog(parser.output());
 
         // Read the config file
@@ -117,8 +81,6 @@ public class Main {
 
         Host myHost = hosts.get(processId);
 
-
-
         PerfectLinks perfectLinks;
         try {
             perfectLinks = new PerfectLinks(processId, myHost.getPort(), hosts);
@@ -127,41 +89,36 @@ public class Main {
             return;
         }
 
-        // Start the receiver thread
+        // Initialize URB
+        UniformReliableBroadcast urb = new UniformReliableBroadcast(perfectLinks, processId, hosts);
+
+        // Initialize FIFO Broadcast
+        FIFOBroadcast fifoBroadcast = new FIFOBroadcast(urb, processId);
+
+        // Start the PerfectLinks receiver
         perfectLinks.startReceiver();
 
         System.out.println("Broadcasting and delivering messages...\n");
 
-        // After a process finishes broadcasting,
-        // it waits forever for the delivery of messages.
-        /*while (true) {
-            // Sleep for 1 hour
-            Thread.sleep(60 * 60 * 1000);
-        }
+        // Sender process
+        int localSeqNum = 0;
+        for (int seqNum = 1; seqNum <= m; seqNum++) {
+            localSeqNum += 1;
+            String payload = ""; // Payload is optional
+            Message message = new Message(processId, localSeqNum, payload.getBytes());
+            message.setType("FRB");
+            fifoBroadcast.frbBroadcast(message);
 
-         */
+            // Log the broadcasting event
+            logEvent("b " + localSeqNum);
 
-        // Determine if this process is the sender or receiver
-        if (processId != receiverId) {
-            // Sender process
-            for (int seqNum = 1; seqNum <= m; seqNum++) {
-                String payload = String.valueOf(seqNum);
-                Message message = new Message(processId,receiverId, seqNum, payload.getBytes());
-                perfectLinks.send(receiverId, message);
-
-                // Log the sending event
-                logEvent("b " + seqNum);
+            if ((localSeqNum % 1000) == 0) {
+                System.out.println("Broadcasted message SeqNum " + localSeqNum);
             }
-        } else {
-            // Receiver process
-            // No action needed; delivery happens in the PerfectLinks class
-            // Implement logging in the deliver method
         }
 
         // Wait for termination signal
         while (true) {
-            // The process should keep running until it receives a termination signal
-            // Signal handling is managed in the template
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
