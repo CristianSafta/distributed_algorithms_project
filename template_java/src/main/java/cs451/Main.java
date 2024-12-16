@@ -2,20 +2,43 @@ package cs451;
 
 import java.io.*;
 import java.net.SocketException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class Main {
 
-    private static int m; // Number of messages to send
+    private static int p;  // number of proposals (slots)
+    private static int vs; // max size of each proposal
+    private static int ds; // max number of distinct elements across proposals
+    private static List<Set<Integer>> slotProposals;
     private static BufferedWriter logWriter;
 
+    // Modified readConfig to read p, vs, ds, and proposals for each slot
     private static void readConfig(String configPath) throws IOException {
         BufferedReader reader = new BufferedReader(new FileReader(configPath));
         String line = reader.readLine();
         String[] tokens = line.trim().split(" ");
-        m = Integer.parseInt(tokens[0]);
+        p = Integer.parseInt(tokens[0]);
+        vs = Integer.parseInt(tokens[1]);
+        ds = Integer.parseInt(tokens[2]);
+
+        slotProposals = new ArrayList<>();
+
+        for (int i = 0; i < p; i++) {
+            line = reader.readLine();
+            if (line == null) {
+                // If fewer lines than p, just assume empty sets for missing slots
+                slotProposals.add(new HashSet<>());
+                continue;
+            }
+
+            String[] valTokens = line.trim().split(" ");
+            Set<Integer> proposalSet = new HashSet<>();
+            for (String valStr : valTokens) {
+                proposalSet.add(Integer.parseInt(valStr));
+            }
+            slotProposals.add(proposalSet);
+        }
+
         reader.close();
     }
 
@@ -48,7 +71,6 @@ public class Main {
     }
 
     private static void handleSignal() {
-        // Handle termination signals if necessary
         System.out.println("Signal received. Shutting down.");
     }
 
@@ -64,7 +86,7 @@ public class Main {
 
         initLog(parser.output());
 
-        // Read the config file
+        // Read the config file (p, vs, ds, and proposals)
         try {
             readConfig(parser.config());
         } catch (IOException e) {
@@ -89,35 +111,24 @@ public class Main {
             return;
         }
 
-        // Initialize URB
-        UniformReliableBroadcast urb = new UniformReliableBroadcast(perfectLinks, processId, hosts);
-
-        // Initialize FIFO Broadcast
-        FIFOBroadcast fifoBroadcast = new FIFOBroadcast(urb, processId);
-
-        // Start the PerfectLinks receiver
+        // Start PerfectLinks receiver
         perfectLinks.startReceiver();
 
-        System.out.println("Broadcasting and delivering messages...\n");
+        // Initialize LatticeAgreement for this milestone
+        // Output will be directly written by LatticeAgreement. We pass parser.output() as output path.
+        LatticeAgreement la = new LatticeAgreement(processId, hosts, perfectLinks, p, parser.output());
 
-        // Sender process
-        int localSeqNum = 0;
-        for (int seqNum = 1; seqNum <= m; seqNum++) {
-            localSeqNum += 1;
-            String payload = ""; // Payload is optional
-            Message message = new Message(processId, localSeqNum, payload.getBytes());
-            message.setType("FRB");
-            fifoBroadcast.frbBroadcast(message);
+        System.out.println("Starting Lattice Agreement...\n");
 
-            // Log the broadcasting event
-            logEvent("b " + localSeqNum);
-
-            if ((localSeqNum % 1000) == 0) {
-                System.out.println("Broadcasted message SeqNum " + localSeqNum);
-            }
+        // Propose each slot
+        for (int slot = 0; slot < p; slot++) {
+            Set<Integer> proposal = slotProposals.get(slot);
+            la.propose(slot, proposal);
         }
 
         // Wait for termination signal
+        // In a robust solution, you'd check if all slots decided before exiting.
+        // For now, we mimic Milestone 2 behavior and wait indefinitely or until a signal arrives.
         while (true) {
             try {
                 Thread.sleep(1000);
@@ -128,6 +139,7 @@ public class Main {
 
         // Close resources
         perfectLinks.close();
+        la.close(); // Ensure we flush any pending decisions
         closeLog();
     }
 }
