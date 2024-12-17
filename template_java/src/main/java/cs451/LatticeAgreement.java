@@ -158,54 +158,86 @@ public class LatticeAgreement {
         SlotState state = slotStates.get(slot);
 
         if (state == null) {
-            // If we never proposed anything ourselves for this slot, initialize empty
+            // If we never proposed anything ourselves for this slot, initialize with empty proposal
             state = new SlotState(new HashSet<>());
             slotStates.put(slot, state);
         }
 
         if (state.decided) {
             // Already decided, just respond with DECIDE
-            LatticeMessage decideMsg = new LatticeMessage(LatticeMessage.Type.DECIDE, slot, state.proposalNumber.get(), state.decidedValue, processId);
+            LatticeMessage decideMsg = new LatticeMessage(
+                    LatticeMessage.Type.DECIDE,
+                    slot,
+                    state.proposalNumber.get(),
+                    state.decidedValue,
+                    processId
+            );
             sendLatticeMessage(decideMsg, msg.getSenderId());
             return;
         }
 
-        // If incoming proposalNumber >= current known proposalNumber:
-        int currentPropNum = state.proposalNumber.get();
-        if (propNum >= currentPropNum) {
+        // Extract proposed and currently accepted values
+        Set<Integer> proposedValues = msg.getValues();
+        Set<Integer> currentAccepted = state.currentValue;
 
-            Set<Integer> proposedValues = msg.getValues();
-            Set<Integer> currentAccepted = state.currentValue;
+        int currentPropNum = state.proposalNumber.get();
+
+        // If incoming proposalNumber >= current known proposalNumber:
+        if (propNum >= currentPropNum) {
+            // Check for consistency:
+            // If proposedValues includes all of currentAccepted or currentAccepted is empty, we ACK.
+            // Otherwise, we NACK with a merged set.
             if (currentAccepted.isEmpty() || proposedValues.containsAll(currentAccepted)) {
-                // Consistent
-                // Update local state: raise our proposal number if needed
+                // Accept (ACK)
+                // Update our known proposal number if needed
                 if (propNum > currentPropNum) {
                     state.proposalNumber.set(propNum);
                 }
-                // Our accepted value can be updated to the proposedValue because it includes what we had
+
+                // Update current accepted value to proposedValues plus our initial proposal
                 state.currentValue = new HashSet<>(proposedValues);
-                // Send ack
-                LatticeMessage ackMsg = new LatticeMessage(LatticeMessage.Type.ACK, slot, propNum, state.currentValue, processId);
+                state.currentValue.addAll(state.initialProposal);
+
+                LatticeMessage ackMsg = new LatticeMessage(
+                        LatticeMessage.Type.ACK,
+                        slot,
+                        propNum,
+                        state.currentValue,
+                        processId
+                );
                 sendLatticeMessage(ackMsg, msg.getSenderId());
             } else {
-                // Conflict: merge and send NACK
-                // Merge sets: union of proposedValues and currentValue
+                // Conflict -> NACK with merged values
                 Set<Integer> merged = new HashSet<>(proposedValues);
                 merged.addAll(currentAccepted);
-                // Increase our known proposal number if needed:
-                if (propNum > currentPropNum) {
-                    state.proposalNumber.set(propNum);
-                }
-                LatticeMessage nackMsg = new LatticeMessage(LatticeMessage.Type.NACK, slot, propNum, merged, processId);
+                merged.addAll(state.initialProposal);
+
+                // Update our proposal number
+                state.proposalNumber.set(propNum);
+
+                LatticeMessage nackMsg = new LatticeMessage(
+                        LatticeMessage.Type.NACK,
+                        slot,
+                        propNum,
+                        merged,
+                        processId
+                );
                 sendLatticeMessage(nackMsg, msg.getSenderId());
             }
         } else {
-            // The proposer is behind our known proposal number, we simply NACK with our current set to help it catch up
+            // The proposer is behind our known proposal number, send NACK with our current set
             Set<Integer> merged = new HashSet<>(state.currentValue);
-            LatticeMessage nackMsg = new LatticeMessage(LatticeMessage.Type.NACK, slot, currentPropNum, merged, processId);
+            LatticeMessage nackMsg = new LatticeMessage(
+                    LatticeMessage.Type.NACK,
+                    slot,
+                    currentPropNum,
+                    merged,
+                    processId
+            );
             sendLatticeMessage(nackMsg, msg.getSenderId());
         }
     }
+
 
     private void handleAck(LatticeMessage msg) {
         int slot = msg.getSlot();
@@ -232,15 +264,16 @@ public class LatticeAgreement {
 
         int currentPropNum = state.proposalNumber.get();
         if (msg.getProposalNumber() == currentPropNum) {
-            // Merge sets and increase proposal number
+            // Merge sets
             Set<Integer> merged = new HashSet<>(state.currentValue);
             merged.addAll(msg.getValues());
+            // Ensure we never lose the initial proposal
+            merged.addAll(state.initialProposal);
 
             state.currentValue = merged;
             int newPropNum = currentPropNum + 1;
             state.proposalNumber.set(newPropNum);
 
-            // Re-propose with updated proposal number
             sendProposal(slot, newPropNum, state.currentValue);
         }
     }
@@ -277,11 +310,13 @@ public class LatticeAgreement {
 
         // if ackCount >= f+1, we can decide
         if (ackCount >= f + 1) {
-            // Decide
             state.decided = true;
+            // currentValue should already include initialProposal,
+            // but let's be extra sure if you want:
+            state.currentValue.addAll(state.initialProposal);
+
             state.decidedValue = new HashSet<>(state.currentValue);
 
-            // Inform others as well (not strictly required if they handle ack/nack logic)
             LatticeMessage decideMsg = new LatticeMessage(LatticeMessage.Type.DECIDE, slot, state.proposalNumber.get(), state.decidedValue, processId);
             broadcastLatticeMessage(decideMsg);
 
