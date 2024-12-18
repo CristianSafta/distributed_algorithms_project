@@ -253,14 +253,20 @@ public class LatticeAgreement {
             return;
         }
 
-        // Check if the ack matches our current proposal number
         int currentPropNum = state.proposalNumber.get();
         if (msg.getProposalNumber() == currentPropNum) {
+            // Merge ACK values into our currentValue to ensure we never lose any known values
+            Set<Integer> merged = new HashSet<>(state.currentValue);
+            merged.addAll(msg.getValues());
+            merged.addAll(state.initialProposal);
+            state.currentValue = merged;
+
             state.responses.put(msg.getSenderId(), true);
             checkForDecision(slot);
         }
-        // If not matching current proposal number, ignore
+        // If proposal number doesn't match, we ignore the ACK as it's obsolete.
     }
+
 
     private void handleNack(LatticeMessage msg) {
         int slot = msg.getSlot();
@@ -289,17 +295,24 @@ public class LatticeAgreement {
         int slot = msg.getSlot();
         SlotState state = slotStates.get(slot);
         if (state == null) {
-            // Just in case, create it
+            // If we never saw this slot before, initialize
             state = new SlotState(new HashSet<>());
             slotStates.put(slot, state);
         }
 
+        // Merge DECIDE values into currentValue before finalizing
+        Set<Integer> merged = new HashSet<>(state.currentValue);
+        merged.addAll(msg.getValues());
+        merged.addAll(state.initialProposal);
+        state.currentValue = merged;
+
         if (!state.decided) {
             state.decided = true;
-            state.decidedValue = new HashSet<>(msg.getValues());
+            state.decidedValue = new HashSet<>(state.currentValue);
             writeDecision(slot, state.decidedValue);
         }
     }
+
 
     // Once we have f+1 acks, we can decide
     private void checkForDecision(int slot) {
