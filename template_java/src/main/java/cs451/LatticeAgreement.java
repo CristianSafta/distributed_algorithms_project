@@ -176,7 +176,6 @@ public class LatticeAgreement {
             return;
         }
 
-        // Extract proposed and currently accepted values
         Set<Integer> proposedValues = msg.getValues();
         Set<Integer> currentAccepted = state.currentValue;
 
@@ -185,7 +184,7 @@ public class LatticeAgreement {
         // If incoming proposalNumber >= current known proposalNumber:
         if (propNum >= currentPropNum) {
             // Check for consistency:
-            // If proposedValues includes all of currentAccepted or currentAccepted is empty, we ACK.
+            // If proposedValues includes all of currentAccepted, we can ACK.
             // Otherwise, we NACK with a merged set.
             if (currentAccepted.isEmpty() || proposedValues.containsAll(currentAccepted)) {
                 // Accept (ACK)
@@ -194,9 +193,13 @@ public class LatticeAgreement {
                     state.proposalNumber.set(propNum);
                 }
 
-                // Update current accepted value to proposedValues plus our initial proposal
-                state.currentValue = new HashSet<>(proposedValues);
-                state.currentValue.addAll(state.initialProposal);
+                // **Important change**:
+                // Previously, we replaced currentValue with proposedValues+initialProposal.
+                // Now we ensure we keep all previously accepted values as well.
+                Set<Integer> newValue = new HashSet<>(currentAccepted);
+                newValue.addAll(proposedValues);
+                newValue.addAll(state.initialProposal);
+                state.currentValue = newValue;
 
                 LatticeMessage ackMsg = new LatticeMessage(
                         LatticeMessage.Type.ACK,
@@ -208,12 +211,14 @@ public class LatticeAgreement {
                 sendLatticeMessage(ackMsg, msg.getSenderId());
             } else {
                 // Conflict -> NACK with merged values
-                Set<Integer> merged = new HashSet<>(proposedValues);
-                merged.addAll(currentAccepted);
+                // Merge proposedValues, currentAccepted, and initialProposal to ensure monotonic growth
+                Set<Integer> merged = new HashSet<>(currentAccepted);
+                merged.addAll(proposedValues);
                 merged.addAll(state.initialProposal);
 
                 // Update our proposal number
                 state.proposalNumber.set(propNum);
+                state.currentValue = merged; // keep merged as the current accepted set
 
                 LatticeMessage nackMsg = new LatticeMessage(
                         LatticeMessage.Type.NACK,
@@ -227,6 +232,7 @@ public class LatticeAgreement {
         } else {
             // The proposer is behind our known proposal number, send NACK with our current set
             Set<Integer> merged = new HashSet<>(state.currentValue);
+            // merged already includes initialProposal and any previously accepted values
             LatticeMessage nackMsg = new LatticeMessage(
                     LatticeMessage.Type.NACK,
                     slot,
@@ -237,6 +243,7 @@ public class LatticeAgreement {
             sendLatticeMessage(nackMsg, msg.getSenderId());
         }
     }
+
 
 
     private void handleAck(LatticeMessage msg) {

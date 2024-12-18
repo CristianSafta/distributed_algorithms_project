@@ -3,9 +3,8 @@
 # Define the number of processes to spawn
 NUM_PROCESSES=3  # Adjust this if you have more processes
 
-# Define paths to configuration files and logs
+# Define paths to configuration files and logs for Lattice Agreement
 HOSTS_FILE="../example/hosts"
-CONFIG_FILE="../example/configs/fifo-broadcast.config"  # Updated for FIFO Broadcast
 LOGS_DIR="../example/output"
 
 # Create the logs directory if it doesn't exist
@@ -30,6 +29,7 @@ trap cleanup SIGINT SIGTERM
 # Start each process in the background and store its PID
 for ((i=1; i<=NUM_PROCESSES; i++))
 do
+    CONFIG_FILE="../example/configs/lattice-agreement-$i.config"
     ./run.sh --id "$i" --hosts "$HOSTS_FILE" --output "$LOGS_DIR/$i.output" "$CONFIG_FILE" &
     PIDS+=($!)  # Store the process ID
     echo "Started process $i with PID ${PIDS[-1]}"
