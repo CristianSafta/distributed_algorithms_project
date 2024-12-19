@@ -7,98 +7,83 @@ import java.util.Map;
 public class Main {
 
     public static void main(String[] args) throws InterruptedException {
-        Parser parser = new Parser(args);
-        parser.parse();
+        ConfigHandler handler = new ConfigHandler();
+        handler.interpretArgs(args);
 
-        // displays config
         long pid = ProcessHandle.current().pid();
-        System.out.println("My PID: " + pid + "\n");
-        System.out.println("From a new terminal type `kill -SIGINT " + pid + "` or `kill -SIGTERM " + pid
-                + "` to stop processing packets\n");
+        System.out.println("My PID: " + pid);
+        System.out.println("Stop with `kill -SIGINT " + pid + "` or `kill -SIGTERM " + pid + "`\n");
 
-        System.out.println("My ID: " + parser.myId() + "\n");
-        System.out.println("List of resolved hosts is:");
-        System.out.println("==========================");
-        for (Host host : parser.hosts()) {
-            System.out.println(host.getId());
-            System.out.println("Human-readable IP: " + host.getIp());
-            System.out.println("Human-readable Port: " + host.getPort());
+        System.out.println("My ID: " + handler.getMyId() + "\n");
+        System.out.println("List of hosts:");
+        System.out.println("==============");
+        for (NodeAddress h : handler.getHosts()) {
+            System.out.println(h.getId());
+            System.out.println("IP: " + h.getIp());
+            System.out.println("Port: " + h.getPortNumber());
             System.out.println();
         }
-        System.out.println();
 
-        System.out.println("Path to output:");
-        System.out.println("===============");
-        System.out.println(parser.output() + "\n");
+        System.out.println("Output path:");
+        System.out.println("==============");
+        System.out.println(handler.getOutput() + "\n");
 
-        System.out.println("Path to config:");
-        System.out.println("===============");
-        System.out.println(parser.config() + "\n");
+        System.out.println("Config path:");
+        System.out.println("==============");
+        System.out.println(handler.getConfig() + "\n");
 
-        // running code for the assignment
-        System.out.println("Doing some initialization\n");
+        System.out.println("Initializing...");
 
-        System.out.println("Creating output file");
-        final LogsBuilder logsBuilder = new LogsBuilder(parser.output());
-        final short myId = parser.myId();
-        final Map<Short, Host> hostsMap = parser.hostsMap();
-        final ConfigParser configParser = parser.configParser();
+        System.out.println("Creating log file...");
+        final RecordKeeper rec = new RecordKeeper(handler.getOutput());
+        final short myId = handler.getMyId();
+        final Map<Short, NodeAddress> hm = handler.getHostsMap();
+        final ConfigurationFileReader cfgReader = new ConfigurationFileReader();
+        cfgReader.setConfigPath(handler.getConfig());
 
         System.out.println("Config content:");
         System.out.println("===============");
-        System.out.println(configParser.getLatticeConfig());
+        System.out.println(cfgReader.obtainNestedConfig());
 
         try {
-            // Creates the sender
-            Sender sender = new Sender(myId, hostsMap, configParser);
-            PlState plState = sender.getPlState();
-            LatticeState latticeState = sender.getLatticeState();
+            RequestsInitiator init = new RequestsInitiator(myId, hm, cfgReader);
+            ChannelState chSt = init.snapshotChannel();
+            ConsensusData.ConsensusStage stage = init.snapshotConsensus();
 
-            // Creates the receiver
-            Receiver receiver = new Receiver(logsBuilder, myId, hostsMap, configParser,
-                    plState, latticeState);
+            ResultsReceiver recv = new ResultsReceiver(rec, myId, hm, cfgReader, chSt, stage);
 
-            // Prepares threads to be started
-            Thread senderThread = new Thread(sender);
-            Thread receiverThread = new Thread(receiver);
-            initSignalHandlers(logsBuilder, parser.output(), senderThread, receiverThread);
+            Thread initThread = new Thread(init);
+            Thread recvThread = new Thread(recv);
+            setupSignalHandlers(rec, handler.getOutput(), initThread, recvThread);
 
-            System.out.println("Broadcasting and delivering messages...\n");
-
-            senderThread.start();
-            receiverThread.start();
+            System.out.println("Starting broadcast/delivery");
+            initThread.start();
+            recvThread.start();
         } catch (UnknownHostException | SocketException e) {
-            System.err.println("Could not configure correctly the host");
+            System.err.println("Host configuration error");
             e.printStackTrace();
             System.exit(1);
         }
 
-        // After a process finishes broadcasting,
-        // it waits forever for the delivery of messages.
+        // Wait indefinitely
         while (true) {
-            // Sleep for 1 hour
-            Thread.sleep(60 * 60 * 1000);
+            Thread.sleep(3600_000);
         }
     }
 
-    private static void handleSignal(LogsBuilder logsBuilder, String output, Thread sender,
-            Thread receiver) {
-        // immediately stop network packet processing
-        System.out.println("Immediately stopping network packet processing.");
+    private static void handleStop(RecordKeeper rec, String output, Thread sender, Thread receiver) {
+        System.out.println("Stopping network packet handling...");
         sender.interrupt();
         receiver.interrupt();
-
-        // https://www.geeksforgeeks.org/java-program-to-write-into-a-file/
-        System.out.println("Writing output.");
-        logsBuilder.tryFlush(true);
+        System.out.println("Final flush...");
+        rec.attemptFlush(true);
     }
 
-    private static void initSignalHandlers(LogsBuilder logsBuilder, String output, Thread sender,
-            Thread receiver) {
+    private static void setupSignalHandlers(RecordKeeper rec, String output, Thread sender, Thread receiver) {
         Runtime.getRuntime().addShutdownHook(new Thread() {
             @Override
             public void run() {
-                handleSignal(logsBuilder, output, sender, receiver);
+                handleStop(rec, output, sender, receiver);
             }
         });
     }
