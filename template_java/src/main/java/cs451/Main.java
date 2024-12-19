@@ -1,145 +1,105 @@
 package cs451;
 
-import java.io.*;
 import java.net.SocketException;
-import java.util.*;
+import java.net.UnknownHostException;
+import java.util.Map;
 
 public class Main {
-
-    private static int p;  // number of proposals (slots)
-    private static int vs; // max size of each proposal
-    private static int ds; // max number of distinct elements across proposals
-    private static List<Set<Integer>> slotProposals;
-    private static BufferedWriter logWriter;
-
-    // Modified readConfig to read p, vs, ds, and proposals for each slot
-    private static void readConfig(String configPath) throws IOException {
-        BufferedReader reader = new BufferedReader(new FileReader(configPath));
-        String line = reader.readLine();
-        String[] tokens = line.trim().split(" ");
-        p = Integer.parseInt(tokens[0]);
-        vs = Integer.parseInt(tokens[1]);
-        ds = Integer.parseInt(tokens[2]);
-
-        slotProposals = new ArrayList<>();
-
-        for (int i = 0; i < p; i++) {
-            line = reader.readLine();
-            if (line == null) {
-                // If fewer lines than p, just assume empty sets for missing slots
-                slotProposals.add(new HashSet<>());
-                continue;
-            }
-
-            String[] valTokens = line.trim().split(" ");
-            Set<Integer> proposalSet = new HashSet<>();
-            for (String valStr : valTokens) {
-                proposalSet.add(Integer.parseInt(valStr));
-            }
-            slotProposals.add(proposalSet);
-        }
-
-        reader.close();
-    }
-
-    private static void initLog(String outputPath) {
-        try {
-            logWriter = new BufferedWriter(new FileWriter(outputPath));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public static synchronized void logEvent(String event) {
-        try {
-            logWriter.write(event);
-            logWriter.newLine();
-            logWriter.flush();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public static void closeLog() {
-        try {
-            if (logWriter != null) {
-                logWriter.close();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static void handleSignal() {
-        System.out.println("Signal received. Shutting down.");
-    }
-
-    private static void initSignalHandlers() {
-        Runtime.getRuntime().addShutdownHook(new Thread(Main::handleSignal));
-    }
 
     public static void main(String[] args) throws InterruptedException {
         Parser parser = new Parser(args);
         parser.parse();
 
-        initSignalHandlers();
+        // displays config
+        long pid = ProcessHandle.current().pid();
+        System.out.println("My PID: " + pid + "\n");
+        System.out.println("From a new terminal type `kill -SIGINT " + pid + "` or `kill -SIGTERM " + pid
+                + "` to stop processing packets\n");
 
-        initLog(parser.output());
+        System.out.println("My ID: " + parser.myId() + "\n");
+        System.out.println("List of resolved hosts is:");
+        System.out.println("==========================");
+        for (Host host : parser.hosts()) {
+            System.out.println(host.getId());
+            System.out.println("Human-readable IP: " + host.getIp());
+            System.out.println("Human-readable Port: " + host.getPort());
+            System.out.println();
+        }
+        System.out.println();
 
-        // Read the config file (p, vs, ds, and proposals)
+        System.out.println("Path to output:");
+        System.out.println("===============");
+        System.out.println(parser.output() + "\n");
+
+        System.out.println("Path to config:");
+        System.out.println("===============");
+        System.out.println(parser.config() + "\n");
+
+        // running code for the assignment
+        System.out.println("Doing some initialization\n");
+
+        System.out.println("Creating output file");
+        final LogsBuilder logsBuilder = new LogsBuilder(parser.output());
+        final short myId = parser.myId();
+        final Map<Short, Host> hostsMap = parser.hostsMap();
+        final ConfigParser configParser = parser.configParser();
+
+        System.out.println("Config content:");
+        System.out.println("===============");
+        System.out.println(configParser.getLatticeConfig());
+
         try {
-            readConfig(parser.config());
-        } catch (IOException e) {
+            // Creates the sender
+            Sender sender = new Sender(myId, hostsMap, configParser);
+            PlState plState = sender.getPlState();
+            LatticeState latticeState = sender.getLatticeState();
+
+            // Creates the receiver
+            Receiver receiver = new Receiver(logsBuilder, myId, hostsMap, configParser,
+                    plState, latticeState);
+
+            // Prepares threads to be started
+            Thread senderThread = new Thread(sender);
+            Thread receiverThread = new Thread(receiver);
+            initSignalHandlers(logsBuilder, parser.output(), senderThread, receiverThread);
+
+            System.out.println("Broadcasting and delivering messages...\n");
+
+            senderThread.start();
+            receiverThread.start();
+        } catch (UnknownHostException | SocketException e) {
+            System.err.println("Could not configure correctly the host");
             e.printStackTrace();
-            return;
+            System.exit(1);
         }
 
-        int processId = parser.myId();
-        List<Host> hostsList = parser.hosts();
-        Map<Integer, Host> hosts = new HashMap<>();
-        for (Host host : hostsList) {
-            hosts.put(host.getId(), host);
-        }
-
-        Host myHost = hosts.get(processId);
-
-        PerfectLinks perfectLinks;
-        try {
-            perfectLinks = new PerfectLinks(processId, myHost.getPort(), hosts);
-        } catch (SocketException e) {
-            e.printStackTrace();
-            return;
-        }
-
-        // Start PerfectLinks receiver
-        perfectLinks.startReceiver();
-
-        // Initialize LatticeAgreement for this milestone
-        // Output will be directly written by LatticeAgreement. We pass parser.output() as output path.
-        LatticeAgreement la = new LatticeAgreement(processId, hosts, perfectLinks, p, parser.output());
-
-        System.out.println("Starting Lattice Agreement...\n");
-
-        // Propose each slot
-        for (int slot = 0; slot < p; slot++) {
-            Set<Integer> proposal = slotProposals.get(slot);
-            la.propose(slot, proposal);
-        }
-
-        // Wait for termination signal
-        // In a robust solution, you'd check if all slots decided before exiting.
-        // For now, we mimic Milestone 2 behavior and wait indefinitely or until a signal arrives.
+        // After a process finishes broadcasting,
+        // it waits forever for the delivery of messages.
         while (true) {
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                break;
-            }
+            // Sleep for 1 hour
+            Thread.sleep(60 * 60 * 1000);
         }
+    }
 
-        // Close resources
-        perfectLinks.close();
-        la.close(); // Ensure we flush any pending decisions
-        closeLog();
+    private static void handleSignal(LogsBuilder logsBuilder, String output, Thread sender,
+            Thread receiver) {
+        // immediately stop network packet processing
+        System.out.println("Immediately stopping network packet processing.");
+        sender.interrupt();
+        receiver.interrupt();
+
+        // https://www.geeksforgeeks.org/java-program-to-write-into-a-file/
+        System.out.println("Writing output.");
+        logsBuilder.tryFlush(true);
+    }
+
+    private static void initSignalHandlers(LogsBuilder logsBuilder, String output, Thread sender,
+            Thread receiver) {
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            @Override
+            public void run() {
+                handleSignal(logsBuilder, output, sender, receiver);
+            }
+        });
     }
 }
